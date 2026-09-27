@@ -1,0 +1,14 @@
+{
+  "include": ["src", "tests"],
+  "exclude": [".venv", "build", "dist"],
+  "venvPath": ".",
+  "venv": ".venv",
+  "executionEnvironments": [
+    {
+      "root": "src"
+    },
+    {
+      "root": "tests"
+    }
+  ]
+}
