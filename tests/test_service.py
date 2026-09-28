@@ -15,10 +15,14 @@ from open_webui_mcp.service import KnowledgeService
 class FakeClient:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.start_count = 0
+        self.close_count = 0
 
-    async def start(self) -> None: ...
+    async def start(self) -> None:
+        self.start_count += 1
 
-    async def close(self) -> None: ...
+    async def close(self) -> None:
+        self.close_count += 1
 
     async def search_document(self, **kwargs: Any) -> list[SearchResult]:
         self.calls.append(("document", kwargs))
@@ -34,6 +38,23 @@ class FakeClient:
 
 def settings(**kwargs: Any) -> Settings:
     return Settings(openwebui_api_key=SecretStr("secret"), **kwargs)
+
+
+@pytest.mark.asyncio
+async def test_shared_client_closes_only_after_last_lifespan() -> None:
+    client = FakeClient()
+    service = KnowledgeService(cast(OpenWebUIClient, client), settings())
+
+    await service.start()
+    await service.start()
+    await service.close()
+
+    assert client.start_count == 1
+    assert client.close_count == 0
+
+    await service.close()
+    await service.close()
+    assert client.close_count == 1
 
 
 @pytest.mark.asyncio

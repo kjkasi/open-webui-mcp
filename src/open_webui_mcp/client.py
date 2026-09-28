@@ -61,11 +61,35 @@ class OpenWebUIClient:
         await self.close()
 
     async def list_knowledge_bases(self, page: int = 1) -> list[KnowledgeBaseSummary]:
-        payload = await self._request_json("GET", "/api/v1/knowledge/", params={"page": page})
-        items = payload.get("items", []) if isinstance(payload, dict) else payload
-        if not isinstance(items, list):
+        """Return all accessible knowledge bases, following upstream pagination."""
+        all_items: list[KnowledgeBaseSummary] = []
+        current_page = page
+        total: int | None = None
+
+        while True:
+            payload = await self._request_json(
+                "GET", "/api/v1/knowledge/", params={"page": current_page}
+            )
+            items, page_total = self._knowledge_base_page(payload)
+            all_items.extend(items)
+            total = page_total if page_total is not None else total
+
+            if total is None or len(all_items) >= total or not items:
+                return all_items
+            current_page += 1
+
+    @classmethod
+    def _knowledge_base_page(cls, payload: Any) -> tuple[list[KnowledgeBaseSummary], int | None]:
+        if isinstance(payload, dict):
+            raw_items = payload.get("items", [])
+            raw_total = payload.get("total")
+            total = raw_total if isinstance(raw_total, int) and raw_total >= 0 else None
+        else:
+            raw_items = payload
+            total = None
+        if not isinstance(raw_items, list):
             raise UpstreamProtocolError("Open WebUI returned an invalid knowledge base list")
-        return [self._knowledge_base(item) for item in items if isinstance(item, dict)]
+        return [cls._knowledge_base(item) for item in raw_items if isinstance(item, dict)], total
 
     async def search_document(
         self,

@@ -55,6 +55,36 @@ async def test_single_search_sends_bearer_and_upstream_payload() -> None:
     assert results[0].score == 0.82
 
 
+@pytest.mark.asyncio
+async def test_list_knowledge_bases_follows_all_pages() -> None:
+    requested_pages: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        page = request.url.params["page"]
+        requested_pages.append(page)
+        if page == "1":
+            return httpx.Response(
+                200,
+                json={
+                    "items": [{"id": "kb-1", "name": "First"}],
+                    "total": 2,
+                },
+            )
+        return httpx.Response(
+            200,
+            json={"items": [{"id": "kb-2", "name": "Second"}], "total": 2},
+        )
+
+    client = OpenWebUIClient(
+        "http://webui.test", "secret-token", max_retries=0, transport=httpx.MockTransport(handler)
+    )
+    bases = await client.list_knowledge_bases()
+    await client.close()
+
+    assert requested_pages == ["1", "2"]
+    assert [base.id for base in bases] == ["kb-1", "kb-2"]
+
+
 def test_normalize_chroma_shape() -> None:
     results = normalize_retrieval_response(
         {

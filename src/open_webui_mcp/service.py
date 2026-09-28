@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from .client import OpenWebUIClient
 from .config import Settings
 from .errors import ConfigurationError, InputValidationError
@@ -12,12 +14,24 @@ class KnowledgeService:
     def __init__(self, client: OpenWebUIClient, settings: Settings) -> None:
         self.client = client
         self.settings = settings
+        self._lifecycle_lock = asyncio.Lock()
+        self._active_lifespans = 0
 
     async def start(self) -> None:
-        await self.client.start()
+        """Acquire one FastMCP session's shared client lease."""
+        async with self._lifecycle_lock:
+            if self._active_lifespans == 0:
+                await self.client.start()
+            self._active_lifespans += 1
 
     async def close(self) -> None:
-        await self.client.close()
+        """Release one session lease, closing the client after the last session."""
+        async with self._lifecycle_lock:
+            if self._active_lifespans == 0:
+                return
+            self._active_lifespans -= 1
+            if self._active_lifespans == 0:
+                await self.client.close()
 
     async def search(self, request: SearchRequest) -> SearchResponse:
         knowledge_ids = self.resolve_knowledge_ids(request)
