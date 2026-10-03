@@ -128,6 +128,124 @@ async def test_list_knowledge_bases_rejects_invalid_totals(total: Any) -> None:
 
 
 @pytest.mark.asyncio
+async def test_list_knowledge_bases_rejects_empty_page_before_declared_total() -> None:
+    requested_pages: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested_pages.append(request.url.params["page"])
+        if len(requested_pages) == 1:
+            return httpx.Response(
+                200,
+                json={"items": [{"id": "kb-1", "name": "First"}], "total": 3},
+            )
+        return httpx.Response(200, json={"items": [], "total": 3})
+
+    client = OpenWebUIClient(
+        "http://webui.test", "secret-token", max_retries=0, transport=httpx.MockTransport(handler)
+    )
+    with pytest.raises(UpstreamProtocolError, match="fewer knowledge bases"):
+        await client.list_knowledge_bases()
+    await client.close()
+
+    assert requested_pages == ["1", "2"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"total": 0},
+        {"items": {"id": "kb-1"}},
+        {"items": [{"id": "kb-1"}, "not-an-item"]},
+    ],
+)
+async def test_list_knowledge_bases_rejects_malformed_pages(payload: Any) -> None:
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=payload)
+
+    client = OpenWebUIClient(
+        "http://webui.test", "secret-token", max_retries=0, transport=httpx.MockTransport(handler)
+    )
+    with pytest.raises(UpstreamProtocolError):
+        await client.list_knowledge_bases()
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_list_knowledge_bases_rejects_inconsistent_totals() -> None:
+    requested_pages: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested_pages.append(request.url.params["page"])
+        if len(requested_pages) == 1:
+            return httpx.Response(
+                200,
+                json={"items": [{"id": "kb-1"}], "total": 2},
+            )
+        return httpx.Response(
+            200,
+            json={"items": [{"id": "kb-2"}], "total": 3},
+        )
+
+    client = OpenWebUIClient(
+        "http://webui.test", "secret-token", max_retries=0, transport=httpx.MockTransport(handler)
+    )
+    with pytest.raises(UpstreamProtocolError, match="inconsistent"):
+        await client.list_knowledge_bases()
+    await client.close()
+
+    assert requested_pages == ["1", "2"]
+
+
+@pytest.mark.asyncio
+async def test_list_knowledge_bases_rejects_overlapping_page_ids() -> None:
+    requested_pages: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested_pages.append(request.url.params["page"])
+        if len(requested_pages) == 1:
+            return httpx.Response(
+                200,
+                json={
+                    "items": [{"id": "kb-1"}, {"id": "kb-2"}],
+                    "total": 3,
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "items": [{"id": "kb-2"}, {"id": "kb-3"}],
+                "total": 3,
+            },
+        )
+
+    client = OpenWebUIClient(
+        "http://webui.test", "secret-token", max_retries=0, transport=httpx.MockTransport(handler)
+    )
+    with pytest.raises(UpstreamProtocolError, match="overlapping"):
+        await client.list_knowledge_bases()
+    await client.close()
+
+    assert requested_pages == ["1", "2"]
+
+
+@pytest.mark.asyncio
+async def test_list_knowledge_bases_rejects_duplicate_ids_within_page() -> None:
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"items": [{"id": "kb-1"}, {"id": "kb-1"}], "total": 2},
+        )
+
+    client = OpenWebUIClient(
+        "http://webui.test", "secret-token", max_retries=0, transport=httpx.MockTransport(handler)
+    )
+    with pytest.raises(UpstreamProtocolError, match="duplicate"):
+        await client.list_knowledge_bases()
+    await client.close()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("page", [0, -1, "1"])
 async def test_list_knowledge_bases_rejects_invalid_start_page(page: Any) -> None:
     def handler(_: httpx.Request) -> httpx.Response:

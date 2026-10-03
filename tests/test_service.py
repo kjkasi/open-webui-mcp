@@ -89,6 +89,25 @@ async def test_final_close_completes_before_propagating_cancellation() -> None:
 
 
 @pytest.mark.asyncio
+async def test_final_close_completes_before_propagating_repeated_cancellation() -> None:
+    client = BlockingCloseClient()
+    service = KnowledgeService(cast(OpenWebUIClient, client), settings())
+
+    await service.start()
+    close_task = asyncio.create_task(service.close())
+    await client.close_started.wait()
+
+    close_task.cancel()
+    await asyncio.sleep(0)
+    close_task.cancel()
+    client.allow_close.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await close_task
+    assert client.close_count == 1
+
+
+@pytest.mark.asyncio
 async def test_real_client_lifecycle_closes_http_session() -> None:
     client = OpenWebUIClient(
         "http://webui.test",

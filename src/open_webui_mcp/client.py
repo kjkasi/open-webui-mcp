@@ -78,26 +78,51 @@ class OpenWebUIClient:
                 "GET", "/api/v1/knowledge/", params={"page": current_page}
             )
             items, page_total = self._knowledge_base_page(payload)
-            if items:
-                page_ids = {item.id for item in items}
-                if page_ids <= seen_ids:
+            if page_total is not None:
+                if total is None:
+                    total = page_total
+                elif page_total != total:
                     raise UpstreamProtocolError(
-                        "Open WebUI returned a knowledge base page without new items"
+                        "Open WebUI returned inconsistent knowledge base totals"
+                    )
+            if items:
+                page_ids = [item.id for item in items]
+                if len(set(page_ids)) != len(page_ids):
+                    raise UpstreamProtocolError(
+                        "Open WebUI returned duplicate knowledge base IDs"
+                    )
+                if seen_ids.intersection(page_ids):
+                    raise UpstreamProtocolError(
+                        "Open WebUI returned overlapping knowledge base pages"
                     )
                 seen_ids.update(page_ids)
             all_items.extend(items)
-            total = page_total if page_total is not None else total
 
-            if total is None or len(all_items) >= total or not items:
+            if total is not None and len(all_items) > total:
+                raise UpstreamProtocolError(
+                    "Open WebUI returned more knowledge bases than declared"
+                )
+            if not items:
+                if total is not None and len(all_items) < total:
+                    raise UpstreamProtocolError(
+                        "Open WebUI returned fewer knowledge bases than declared"
+                    )
                 return all_items
-            current_page += 1
+            if total is None or len(all_items) < total:
+                current_page += 1
+                continue
+            return all_items
 
     @classmethod
     def _knowledge_base_page(
         cls, payload: Any
     ) -> tuple[list[KnowledgeBaseSummary], int | None]:
         if isinstance(payload, dict):
-            raw_items = payload.get("items", [])
+            if "items" not in payload:
+                raise UpstreamProtocolError(
+                    "Open WebUI returned a knowledge base page without items"
+                )
+            raw_items = payload["items"]
             if "total" in payload:
                 raw_total = payload["total"]
                 if isinstance(raw_total, bool) or not isinstance(raw_total, int) or raw_total < 0:
@@ -112,7 +137,9 @@ class OpenWebUIClient:
             total = None
         if not isinstance(raw_items, list):
             raise UpstreamProtocolError("Open WebUI returned an invalid knowledge base list")
-        return [cls._knowledge_base(item) for item in raw_items if isinstance(item, dict)], total
+        if any(not isinstance(item, dict) for item in raw_items):
+            raise UpstreamProtocolError("Open WebUI returned an invalid knowledge base item")
+        return [cls._knowledge_base(item) for item in raw_items], total
 
     async def search_document(
         self,
