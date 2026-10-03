@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any, cast
 
+import httpx
 import pytest
 from pydantic import SecretStr, ValidationError
 
@@ -40,6 +42,18 @@ def settings(**kwargs: Any) -> Settings:
     return Settings(openwebui_api_key=SecretStr("secret"), **kwargs)
 
 
+class BlockingCloseClient(FakeClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.close_started = asyncio.Event()
+        self.allow_close = asyncio.Event()
+
+    async def close(self) -> None:
+        self.close_started.set()
+        await self.allow_close.wait()
+        self.close_count += 1
+
+
 @pytest.mark.asyncio
 async def test_shared_client_closes_only_after_last_lifespan() -> None:
     client = FakeClient()
@@ -55,6 +69,40 @@ async def test_shared_client_closes_only_after_last_lifespan() -> None:
     await service.close()
     await service.close()
     assert client.close_count == 1
+
+
+@pytest.mark.asyncio
+async def test_final_close_completes_before_propagating_cancellation() -> None:
+    client = BlockingCloseClient()
+    service = KnowledgeService(cast(OpenWebUIClient, client), settings())
+
+    await service.start()
+    close_task = asyncio.create_task(service.close())
+    await client.close_started.wait()
+
+    close_task.cancel()
+    client.allow_close.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await close_task
+    assert client.close_count == 1
+
+
+@pytest.mark.asyncio
+async def test_real_client_lifecycle_closes_http_session() -> None:
+    client = OpenWebUIClient(
+        "http://webui.test",
+        "secret-token",
+        transport=httpx.MockTransport(lambda _: httpx.Response(200, json=[])),
+    )
+    service = KnowledgeService(client, settings())
+
+    await service.start()
+    assert client._http is not None
+
+    await service.close()
+
+    assert client._http is None
 
 
 @pytest.mark.asyncio

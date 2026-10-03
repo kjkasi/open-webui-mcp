@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from typing import Any
+
 import httpx
 import pytest
 
 from open_webui_mcp.client import OpenWebUIClient, normalize_retrieval_response
-from open_webui_mcp.errors import AuthenticationError, UpstreamTimeoutError
+from open_webui_mcp.errors import AuthenticationError, UpstreamProtocolError, UpstreamTimeoutError
 
 
 @pytest.mark.asyncio
@@ -83,6 +85,75 @@ async def test_list_knowledge_bases_follows_all_pages() -> None:
 
     assert requested_pages == ["1", "2"]
     assert [base.id for base in bases] == ["kb-1", "kb-2"]
+
+
+@pytest.mark.asyncio
+async def test_list_knowledge_bases_rejects_repeated_nonempty_pages() -> None:
+    requested_pages: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested_pages.append(request.url.params["page"])
+        if len(requested_pages) > 2:
+            raise AssertionError("pagination did not detect repeated page data")
+        return httpx.Response(
+            200,
+            json={"items": [{"id": "kb-1", "name": "First"}], "total": 3},
+        )
+
+    client = OpenWebUIClient(
+        "http://webui.test", "secret-token", max_retries=0, transport=httpx.MockTransport(handler)
+    )
+    with pytest.raises(UpstreamProtocolError):
+        await client.list_knowledge_bases()
+    await client.close()
+
+    assert requested_pages == ["1", "2"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("total", ["2", True])
+async def test_list_knowledge_bases_rejects_invalid_totals(total: Any) -> None:
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"items": [{"id": "kb-1", "name": "First"}], "total": total},
+        )
+
+    client = OpenWebUIClient(
+        "http://webui.test", "secret-token", max_retries=0, transport=httpx.MockTransport(handler)
+    )
+    with pytest.raises(UpstreamProtocolError):
+        await client.list_knowledge_bases()
+    await client.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("page", [0, -1, "1"])
+async def test_list_knowledge_bases_rejects_invalid_start_page(page: Any) -> None:
+    def handler(_: httpx.Request) -> httpx.Response:
+        raise AssertionError("invalid page reached upstream")
+
+    client = OpenWebUIClient(
+        "http://webui.test", "secret-token", max_retries=0, transport=httpx.MockTransport(handler)
+    )
+    with pytest.raises(ValueError, match="page must be an integer >= 1"):
+        await client.list_knowledge_bases(page=page)
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_close_clears_http_client_when_close_fails() -> None:
+    class FailingHttpClient:
+        async def aclose(self) -> None:
+            raise RuntimeError("close failed")
+
+    client = OpenWebUIClient("http://webui.test", "secret-token")
+    client._http = FailingHttpClient()  # type: ignore[assignment]
+
+    with pytest.raises(RuntimeError, match="close failed"):
+        await client.close()
+
+    assert client._http is None
 
 
 def test_normalize_chroma_shape() -> None:

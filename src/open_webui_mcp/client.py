@@ -49,8 +49,11 @@ class OpenWebUIClient:
             )
 
     async def close(self) -> None:
-        if self._http is not None:
+        if self._http is None:
+            return
+        try:
             await self._http.aclose()
+        finally:
             self._http = None
 
     async def __aenter__(self) -> OpenWebUIClient:
@@ -62,15 +65,26 @@ class OpenWebUIClient:
 
     async def list_knowledge_bases(self, page: int = 1) -> list[KnowledgeBaseSummary]:
         """Return all accessible knowledge bases, following upstream pagination."""
+        if isinstance(page, bool) or not isinstance(page, int) or page < 1:
+            raise ValueError("page must be an integer >= 1")
+
         all_items: list[KnowledgeBaseSummary] = []
         current_page = page
         total: int | None = None
+        seen_ids: set[str] = set()
 
         while True:
             payload = await self._request_json(
                 "GET", "/api/v1/knowledge/", params={"page": current_page}
             )
             items, page_total = self._knowledge_base_page(payload)
+            if items:
+                page_ids = {item.id for item in items}
+                if page_ids <= seen_ids:
+                    raise UpstreamProtocolError(
+                        "Open WebUI returned a knowledge base page without new items"
+                    )
+                seen_ids.update(page_ids)
             all_items.extend(items)
             total = page_total if page_total is not None else total
 
@@ -79,11 +93,20 @@ class OpenWebUIClient:
             current_page += 1
 
     @classmethod
-    def _knowledge_base_page(cls, payload: Any) -> tuple[list[KnowledgeBaseSummary], int | None]:
+    def _knowledge_base_page(
+        cls, payload: Any
+    ) -> tuple[list[KnowledgeBaseSummary], int | None]:
         if isinstance(payload, dict):
             raw_items = payload.get("items", [])
-            raw_total = payload.get("total")
-            total = raw_total if isinstance(raw_total, int) and raw_total >= 0 else None
+            if "total" in payload:
+                raw_total = payload["total"]
+                if isinstance(raw_total, bool) or not isinstance(raw_total, int) or raw_total < 0:
+                    raise UpstreamProtocolError(
+                        "Open WebUI returned an invalid knowledge base total"
+                    )
+                total: int | None = raw_total
+            else:
+                total = None
         else:
             raw_items = payload
             total = None

@@ -31,7 +31,12 @@ class KnowledgeService:
                 return
             self._active_lifespans -= 1
             if self._active_lifespans == 0:
-                await self.client.close()
+                close_task = asyncio.create_task(self.client.close())
+                try:
+                    await asyncio.shield(close_task)
+                except asyncio.CancelledError:
+                    await close_task
+                    raise
 
     async def search(self, request: SearchRequest) -> SearchResponse:
         knowledge_ids = self.resolve_knowledge_ids(request)
